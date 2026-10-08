@@ -1,0 +1,1 @@
+"""Central showroom counting service."""

@@ -1,0 +1,100 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Maggpie Friends Demo</title>
+<style>
+:root{color-scheme:dark;font:15px system-ui;color:#e6eee9;background:#0d1716}*{box-sizing:border-box}body{margin:0;padding:32px;max-width:1500px;margin:auto}header{margin-bottom:28px}h1{font-size:30px;margin:0 0 8px}p{color:#a4b9af;line-height:1.6}.tag{color:#8bdfb5;font-size:12px;letter-spacing:2px}main{display:grid;grid-template-columns:300px 1fr;gap:24px}.panel{border:1px solid #30433b;background:#15231e;border-radius:14px;padding:22px}label{display:block;margin:18px 0 7px;color:#c1d1c8}input,select,button{width:100%;border:1px solid #40564b;border-radius:7px;padding:11px;background:#0f1c16;color:inherit;font:inherit}button{cursor:pointer;background:#9ae6b9;color:#102418;font-weight:650;margin-top:12px}button.secondary{background:transparent;color:#dce8df}button:disabled{opacity:.4;cursor:default}.metrics{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-bottom:18px}.metric{padding:16px;background:#1d3026;border-radius:10px}.metric span{display:block;color:#b5c8bb;font-size:13px}.metric strong{display:block;font-size:30px;margin-top:8px}.screen{min-height:310px;display:flex;align-items:center;justify-content:center;background:#09100c;border-radius:10px;overflow:hidden}.screen img{width:100%;display:none}.hint{font-size:12px}#status{overflow-wrap:anywhere}#empty{text-align:center;padding:36px}input[type=range]{padding:0}footer{margin-top:24px;color:#92a99a;font-size:13px}@media(max-width:850px){main{grid-template-columns:1fr}body{padding:18px}.metrics{grid-template-columns:repeat(2,1fr)}}
+.screen{position:relative}.screen video{display:none;width:100%;height:auto}.screen canvas{position:absolute;inset:0;width:100%;height:100%;pointer-events:none}#viewNote{color:#8bdfb5}h2{font-size:17px}.consent{display:flex;gap:8px;font-size:13px}.consent input{width:auto}#importStatus{white-space:pre-wrap;font-size:12px;color:#ffd28a}#gallery{padding-left:18px;font-size:13px}.screen:has(video[style*="block"]){min-height:0}</style>
+<header><div class="tag">FRIENDS RECOGNITION / DEMO</div><h1>Maggpie</h1><p>Recognize enrolled friends by name. Count other people when they cross the line.</p></header>
+<main><section class="panel"><h2>1. Load your friends</h2><p class="hint">Photos: <strong>demo_photos / Friend name / photos</strong></p><label class="consent"><input type="checkbox" id="consent">My friends agreed to this recognition demo.</label><button type="button" id="importPhotos">Import photos</button><p id="importStatus" role="status"></p><ul id="gallery"></ul><hr><h2>2. Start webcam</h2><form id="controls">
+<label for="mode">Input</label><select id="mode"><option value="browser" selected>Laptop webcam (browser permission)</option></select>
+<div id="sourceRow" hidden><label id="sourceLabel" for="source">Video path</label><input id="source" autocomplete="off" placeholder="C:\videos\entrance.mp4"></div>
+<p class="hint" id="inputHint">Synthetic crossing clip for checking the app. It does not measure showroom accuracy.</p>
+<label for="axis">Counting line</label><select id="axis"><option value="horizontal">Horizontal</option><option value="vertical" selected>Vertical</option></select>
+<label for="position">Line position: <span id="positionValue">50%</span></label><input id="position" type="range" min="10" max="90" value="50">
+<label for="direction">IN direction</label><select id="direction"><option value="positive">Down / Right</option><option value="negative">Up / Left</option></select>
+<p class="hint">For a horizontal line, count where people's feet cross the doorway. Stop before changing settings.</p>
+<button id="start" type="submit">Start counting</button><button id="stop" class="secondary" type="button" disabled>Stop & save</button>
+</form></section><section class="panel">
+<div class="metrics"><div class="metric"><span>Visitor IN</span><strong id="entries">0</strong></div><div class="metric"><span>Visitor OUT</span><strong id="exits">0</strong></div><div class="metric"><span>Faces now</span><strong id="faces_now">0</strong></div><div class="metric"><span>Staff crossings excluded</span><strong id="staff_excluded">0</strong></div></div>
+<p class="hint" id="viewNote">Live video and AI detection update independently.</p><div class="screen"><video id="live" muted autoplay playsinline></video><canvas id="overlay" hidden></canvas><img id="frame" alt="Annotated camera or video frame"><div id="empty"><strong>Ready when you are</strong><p>Choose an input, then start counting.<br>No camera is accessed until you press Start.</p></div></div>
+<p id="recognition" aria-live="polite">Import photos to enable recognition.</p><p id="status" role="status" aria-live="polite">Idle</p><p class="hint" id="saved"></p>
+</section></main><footer>Registered names = enrolled friends · Unknown = no confident match · Checking = waiting for confirmation.<br>Visitor counts change only on a person crossing the line. Registered friends are excluded only when matched at the crossing. Repeat crossings count again; no liveness check.<br>For the demo: one person at a time, face the camera, pause until the name appears, then walk slowly across the vertical line. Each Start resets counts. Closing the tab stops camera access.</footer>
+<script>
+const token='__TOKEN__', $=id=>document.getElementById(id);
+let frameURL=null, actionPending=false, media=null, captureId=null, cameraError='', generation=0;
+const video=$('live'), canvas=document.createElement('canvas'), overlay=$('overlay'), ctx=overlay.getContext('2d');
+let latestStats={}, lastDetection=0, lastFrame=-1, enrolledCount=0, importing=false;
+async function showGallery(){const response=await fetch('/api/gallery');const data=await response.json();enrolledCount=data.people.length;$('gallery').replaceChildren();for(const person of data.people){const li=document.createElement('li');li.textContent=person.name+' · '+person.photos+' photo(s)';$('gallery').append(li);}}
+$('importPhotos').onclick=async()=>{if(importing)return;importing=true;$('importPhotos').disabled=true;$('importStatus').textContent='Checking portraits and building face templates…';try{await command('/api/import',{consent:$('consent').checked});await showGallery();$('importStatus').textContent=enrolledCount+' friend(s) ready. Start the webcam.';}catch(error){$('importStatus').textContent=error.message;}finally{importing=false;$('importPhotos').disabled=false;}};
+showGallery().catch(()=>{});
+function drawOverlay(){
+ if(media && video.videoWidth){
+  if(overlay.width!==video.videoWidth||overlay.height!==video.videoHeight){overlay.width=video.videoWidth;overlay.height=video.videoHeight;}
+  const w=overlay.width,h=overlay.height;ctx.clearRect(0,0,w,h);
+  ctx.lineWidth=2;ctx.font='14px system-ui';
+  if(performance.now()-lastDetection<500){for(const [key,color] of [['people_boxes','#69dc64'],['face_boxes','#4bb4ff']]){ctx.strokeStyle=color;for(const b of latestStats[key]||[])ctx.strokeRect(b[0]*w,b[1]*h,(b[2]-b[0])*w,(b[3]-b[1])*h);}}
+  if(performance.now()-lastDetection<800){for(const face of latestStats.face_labels||[]){const b=face.box;ctx.fillStyle=face.status==='registered'?'#9ae6b9':'#ffd28a';ctx.fillText(face.name,Math.max(4,b[0]*w),Math.max(20,b[1]*h-8));}}
+  const vertical=$('axis').value==='vertical',p=Number($('position').value)/100;ctx.strokeStyle='#ffca32';ctx.fillStyle='#ffca32';ctx.beginPath();ctx.moveTo(vertical?w*p:0,vertical?0:h*p);ctx.lineTo(vertical?w*p:w,vertical?h:h*p);ctx.stroke();
+  ctx.fillText('IN '+($('direction').value==='positive'?(vertical?'→':'↓'):(vertical?'←':'↑')),vertical?w*p+10:12,vertical?25:h*p-10);
+ }
+ requestAnimationFrame(drawOverlay);
+}
+requestAnimationFrame(drawOverlay);
+video.muted=true;video.playsInline=true;
+function releaseCamera(){generation++;if(media)media.getTracks().forEach(t=>t.stop());media=null;video.srcObject=null;captureId=null;video.style.display='none';overlay.hidden=true;latestStats={};}
+function cameraMessage(error){return ({NotAllowedError:'Camera permission denied. Chrome address bar → site settings → Camera → Allow, then retry.',NotFoundError:'No webcam found by Chrome. Connect or enable your webcam.',NotReadableError:'Camera is busy or unavailable. Close Camera, Zoom and Meet, then retry.',OverconstrainedError:'Camera does not support these settings.'})[error.name]||error.message||'Could not start webcam.';}
+$('mode').onchange=()=>{const mode=$('mode').value;$('sourceRow').hidden=['demo','browser'].includes(mode);$('source').type=mode==='stream'?'password':'text';$('source').value=mode==='webcam'?'0':'';$('sourceLabel').textContent=mode==='stream'?'RTSP / HTTP stream URL':mode==='webcam'?'Webcam number':'Full video path on this PC';$('inputHint').textContent=mode==='browser'?'Press Start and allow camera access in Chrome. Frames are processed only on this PC.':mode==='demo'?'Synthetic crossing clip. It does not measure showroom accuracy.':mode==='webcam'?'Advanced: Python camera access, usually index 0.':mode==='stream'?'Enter the authorized camera URL. Credentials are not saved.':'Paste the full local path, without surrounding quotation marks.';};
+$('mode').onchange();
+$('position').oninput=()=>{$('positionValue').textContent=$('position').value+'%';};
+async function command(path,data={}){const response=await fetch(path,{method:'POST',headers:{'Content-Type':'application/json','X-Session-Token':token},body:JSON.stringify(data)});const result=await response.json();if(!response.ok)throw Error(result.error);return result;}
+async function sendFrames(myGeneration){
+ if(!media||myGeneration!==generation)return;
+ try{
+  if(video.readyState>=2){
+   canvas.width=Math.min(640,video.videoWidth);canvas.height=Math.round(video.videoHeight*canvas.width/video.videoWidth);
+   canvas.getContext('2d').drawImage(video,0,0,canvas.width,canvas.height);
+   const blob=await new Promise(resolve=>canvas.toBlob(resolve,'image/jpeg',.8));
+   if(!media||myGeneration!==generation)return;
+   const response=await fetch('/api/camera-frame',{method:'POST',headers:{'X-Session-Token':token,'X-Capture-Id':captureId,'Content-Type':'image/jpeg'},body:blob});
+   if(!response.ok)throw Error('Camera session stopped. Press Start to reconnect.');
+  }
+  if(myGeneration===generation)setTimeout(()=>sendFrames(myGeneration),100);
+ }catch(error){if(myGeneration===generation){cameraError=error.message;releaseCamera();command('/api/stop').catch(()=>{});}}
+}
+$('controls').onsubmit=async event=>{
+ event.preventDefault();if(actionPending)return;actionPending=true;cameraError='';$('start').disabled=true;
+ let started=false;
+ try{
+  if(!enrolledCount)throw Error('Import your friends’ photos before starting.');
+  if($('mode').value==='browser'){
+   $('status').textContent='Waiting for camera permission…';
+   if(!navigator.mediaDevices?.getUserMedia)throw Error('Open http://127.0.0.1:8020 in Chrome to use the webcam.');
+   media=await navigator.mediaDevices.getUserMedia({video:{width:{ideal:640},height:{ideal:480}},audio:false});
+   video.srcObject=media;await video.play();video.style.display='block';overlay.hidden=false;$('frame').style.display='none';$('empty').style.display='none';lastFrame=-1;$('viewNote').textContent='Live webcam preview • Boxes show recent AI results and may trail fast motion.';
+  }
+  const result=await command('/api/start',{mode:$('mode').value,source:$('source').value,axis:$('axis').value,position:Number($('position').value)/100,direction:$('direction').value});
+  started=true;captureId=result.capture_id;
+  if(media){media.getVideoTracks()[0].onended=()=>{cameraError='Webcam disconnected. Reconnect and press Start.';releaseCamera();command('/api/stop').catch(()=>{});};sendFrames(generation);}
+  $('status').textContent='Starting…';
+ }catch(error){cameraError=cameraMessage(error);releaseCamera();if(started)await command('/api/stop').catch(()=>{});$('status').textContent=cameraError;}
+ finally{actionPending=false;}
+};
+$('stop').onclick=async()=>{releaseCamera();try{await command('/api/stop');$('status').textContent='Stopping and saving…';}catch(error){cameraError=error.message;}};
+window.addEventListener('pagehide',()=>{if(media){releaseCamera();fetch('/api/stop',{method:'POST',keepalive:true,headers:{'X-Session-Token':token,'Content-Type':'application/json'},body:'{}'}).catch(()=>{});}});
+async function poll(){
+ try{
+  const response=await fetch('/api/status');if(!response.ok)throw Error();const stats=await response.json();latestStats=stats;if(stats.frames!==lastFrame){lastFrame=stats.frames;lastDetection=performance.now();}
+  for(const name of ['entries','exits','faces_now','staff_excluded'])$(name).textContent=stats[name]??0;
+  $('start').disabled=stats.running||actionPending||importing||!enrolledCount;$('importPhotos').disabled=stats.running||importing;$('consent').disabled=stats.running||importing;
+  $('recognition').textContent=stats.running?(stats.face_labels||[]).map(f=>f.name).join(' · ')||'Looking for faces…':'Ready: '+enrolledCount+' enrolled friend(s).';$('stop').disabled=!stats.running;
+  for(const id of ['mode','source','axis','position','direction'])$(id).disabled=stats.running||actionPending;
+  if(!actionPending){$('status').textContent=cameraError||stats.message||`${stats.status} · ${stats.frames??0} frames · AI ${stats.processing_fps??0} FPS · inference ${stats.inference_ms??0} ms`;if(!stats.running&&media)releaseCamera();}
+  $('saved').textContent=stats.output_folder?'Saved: '+stats.output_folder:'';
+  if(!media){const frame=await fetch('/api/frame');if(frame.status===200){const next=URL.createObjectURL(await frame.blob());$('frame').src=next;$('frame').style.display='block';$('empty').style.display='none';if(frameURL)URL.revokeObjectURL(frameURL);frameURL=next;}else if(frame.status===204){$('frame').style.display='none';$('empty').style.display='block';}}
+ }catch{releaseCamera();$('status').textContent='Local server unavailable. Run start_demo.bat to reconnect.';}
+ finally{setTimeout(poll,120);}
+}
+poll();
+</script>
+</html>

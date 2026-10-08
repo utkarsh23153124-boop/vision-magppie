@@ -1,0 +1,6 @@
+{$MAGGPIE_DOMAIN} {
+    request_body {
+        max_size 8MB
+    }
+    reverse_proxy vision:8010
+}

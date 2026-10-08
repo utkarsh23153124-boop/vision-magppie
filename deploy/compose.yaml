@@ -1,0 +1,32 @@
+services:
+  vision:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+    env_file: .env
+    environment:
+      MAGGPIE_PUBLIC_ORIGIN: https://${MAGGPIE_DOMAIN:?Set MAGGPIE_DOMAIN in deploy/.env}
+    volumes:
+      - vision-data:/data
+    restart: unless-stopped
+    stop_grace_period: 90s
+    security_opt:
+      - no-new-privileges:true
+    cap_drop: [ALL]
+    read_only: true
+    tmpfs: [/tmp]
+  proxy:
+    image: caddy:2
+    environment:
+      MAGGPIE_DOMAIN: ${MAGGPIE_DOMAIN:?Set MAGGPIE_DOMAIN}
+    ports: ["80:80", "443:443"]
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    depends_on: [vision]
+    restart: unless-stopped
+volumes:
+  vision-data:
+  caddy-data:
+  caddy-config:

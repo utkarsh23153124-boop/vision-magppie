@@ -1,0 +1,39 @@
+# Python environments and caches
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Downloaded models and local runtime data
+models/
+output/
+samples/
+data/
+tmp/
+*.db
+*.db-*
+*.sqlite*
+*.log
+
+# Secrets and machine-specific configuration
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.pfx
+*.p12
+.aws/
+.codex/
+.agents/
+.vscode/
+.idea/
+Thumbs.db
+.DS_Store
+
+# Publish instructions only; never enrollments or personal folder names
+demo_photos/*
+!demo_photos/README.md
