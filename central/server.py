@@ -20,6 +20,7 @@ import numpy as np
 
 from central.staff import StaffStore, Recognizer
 from central.store import Store, IST
+from central.uniform_store import UniformStore
 from central.workers import Manager
 from vision.detectors import Detectors
 from vision.models import ROOT
@@ -38,7 +39,8 @@ class Application:
         self.secure = parsed.scheme == 'https'
         self.store = Store(Path(data_dir) / 'maggpie.sqlite3')
         self.staff = StaffStore(self.store, key)
-        self.manager = Manager(self.store, self.staff, limit)
+        self.uniforms = UniformStore(self.store)
+        self.manager = Manager(self.store, self.staff, limit, uniform_store=self.uniforms)
         self.sessions, self.attempts = {}, {}
         self.lock, self.enroll_lock = threading.Lock(), threading.Lock()
 
@@ -129,10 +131,22 @@ class Handler(BaseHTTPRequestHandler):
             if parsed.path == '/api/preview':
                 frame = self.app.manager.preview(parse_qs(parsed.query).get('id',[''])[0])
                 return self.reply(200 if frame else 204, frame or b'', 'image/jpeg')
+            if parsed.path == '/api/cameras/health':
+                cam_id = parse_qs(parsed.query).get('id',[''])[0]
+                worker = self.app.manager.workers.get(cam_id)
+                if not worker:
+                    return self.reply(404, {'error': 'Camera worker not found.'})
+                return self.reply(200, worker.health.snapshot())
+            if parsed.path == '/api/uniform':
+                showroom = parse_qs(parsed.query).get('showroom', [None])[0]
+                return self.reply(200, self.app.uniforms.list(showroom))
             if parsed.path == '/api/dashboard':
                 date = parse_qs(parsed.query).get('date',[datetime.now(IST).strftime('%Y-%m-%d')])[0]
                 return self.reply(200, {'cameras':self.app.store.cameras(), 'workers':self.app.manager.snapshot(),
-                                        'report':self.app.store.report(date), 'staff':self.app.staff.list()})
+                                        'report':self.app.store.report(date), 'staff':self.app.staff.list(),
+                                        'uniforms':self.app.uniforms.list(),
+                                        'staff_history':self.app.store.staff_crossings(100),
+                                        'crossings_log':self.app.store.all_crossings(100)})
             if parsed.path == '/api/report.csv':
                 date = parse_qs(parsed.query).get('date',[datetime.now(IST).strftime('%Y-%m-%d')])[0]
                 report = self.app.store.report(date)
@@ -159,7 +173,7 @@ class Handler(BaseHTTPRequestHandler):
                 return self.reply(403, {'error':'Refresh and sign in again.'})
         try:
             length = int(self.headers.get('Content-Length','0'))
-            maximum = 8_000_000 if self.path == '/api/staff' else 16384
+            maximum = 16_000_000 if self.path == '/api/staff' else 16384
             if not 0 < length <= maximum:
                 return self.reply(413, {'error':'Request too large or empty.'})
             data = json.loads(self.rfile.read(length))
@@ -184,12 +198,14 @@ class Handler(BaseHTTPRequestHandler):
                 self.app.manager.configure(str(data.get('id','')),data)
             elif self.path == '/api/cameras/stop':
                 self.app.manager.stop(str(data.get('id','')))
+            elif self.path == '/api/cameras/delete':
+                self.app.manager.delete(str(data.get('id','')))
             elif self.path == '/api/staff':
                 if data.get('consent') is not True:
                     raise ValueError('Confirm staff consent before enrollment.')
                 photos = data.get('photos', [])
-                if not isinstance(photos,list) or not 1 <= len(photos) <= 5:
-                    raise ValueError('Choose 1–5 portrait photos.')
+                if not isinstance(photos,list) or not 1 <= len(photos) <= 10:
+                    raise ValueError('Choose 1–10 portrait photos.')
                 embeddings = []
                 with self.app.enroll_lock:
                     detector, recognizer = Detectors(), Recognizer()
@@ -202,6 +218,25 @@ class Handler(BaseHTTPRequestHandler):
                 return self.reply(201, {'id':staff_id})
             elif self.path == '/api/staff/delete':
                 self.app.staff.delete(str(data.get('id','')))
+            elif self.path == '/api/uniform':
+                showroom = str(data.get('showroom', '')).strip()
+                label = str(data.get('label', '')).strip()
+                photos = data.get('photos', [])
+                if not isinstance(photos, list) or not 1 <= len(photos) <= 10:
+                    raise ValueError('Choose 1–10 uniform sample photos.')
+                frames = []
+                for p in photos:
+                    img = cv2.imdecode(np.frombuffer(base64.b64decode(p, validate=True), np.uint8), cv2.IMREAD_COLOR)
+                    if img is not None:
+                        frames.append(img)
+                pid = self.app.uniforms.register(showroom, label, frames)
+                self.app.manager.reload_uniforms(showroom)
+                return self.reply(201, {'id': pid, 'label': label, 'showroom': showroom})
+            elif self.path == '/api/uniform/delete':
+                showroom = str(data.get('showroom', '')).strip()
+                label = str(data.get('label', '')).strip()
+                self.app.uniforms.delete(showroom, label)
+                self.app.manager.reload_uniforms(showroom)
             else:
                 return self.reply(404, {'error':'Not found.'})
             return self.reply(200, {'ok':True})
@@ -220,10 +255,20 @@ def create_server(app, host='127.0.0.1', port=8010):
 
 
 def main():
+    from central.env import load_env
+    # Check root .env first, then deploy/.env
+    load_env(ROOT / '.env', override=True)
+    load_env(ROOT / 'deploy' / '.env', override=True)
+
     parser = argparse.ArgumentParser()
     parser.add_argument('--host', default='127.0.0.1')
     parser.add_argument('--port', type=int, default=8010)
+    parser.add_argument('--env-file', default=None, help='Custom path to .env file')
     args = parser.parse_args()
+
+    if args.env_file:
+        load_env(args.env_file, override=True)
+
     app = Application(os.environ.get('MAGGPIE_DATA_DIR', str(ROOT/'data')),
                       os.environ.get('MAGGPIE_ADMIN_PASSWORD',''), os.environ.get('MAGGPIE_STAFF_KEY',''),
                       os.environ.get('MAGGPIE_PUBLIC_ORIGIN',f'http://127.0.0.1:{args.port}'),
