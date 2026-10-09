@@ -9,6 +9,12 @@ from vision.pipeline import Config, run
 
 
 def main():
+    try:
+        from central.env import load_env
+        load_env()
+    except ImportError:
+        pass
+
     parser = argparse.ArgumentParser(description="Maggpie face detection + physical footfall counter")
     parser.add_argument("--source", default=os.environ.get("MAGGPIE_SOURCE", ""), help="Video path or webcam index. For secret URLs use MAGGPIE_SOURCE or the desktop app.")
     parser.add_argument("--axis", choices=["horizontal", "vertical"], default="horizontal")

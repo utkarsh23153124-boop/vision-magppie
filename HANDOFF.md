@@ -54,20 +54,24 @@ flowchart LR
 
 | Location | Responsibility |
 |---|---|
-| `vision/models.py` | Pinned NanoDet/YuNet download URLs and SHA-256 checks |
-| `vision/detectors.py` | OpenCV DNN person detection and YuNet face detection |
-| `vision/counting.py` | Spatial association, track expiry, stable-side crossing rules |
+| `vision/models.py` | Pinned NanoDet/YuNet/YOLO download URLs and SHA-256 checks |
+| `vision/detectors.py` | OpenCV DNN person detection, YOLOv8n ONNX runtime, and YuNet face detection |
+| `vision/bytetrack.py` | ByteTracker multi-stage Kalman association tracker |
+| `vision/counting.py` | Spatial tracker, LineCounter, and two-zone transition gate ZoneCounter |
+| `vision/uniform.py` | Upper-body HSV uniform color histogram matching and frequency suppressor |
 | `vision/pipeline.py` | Local source processing, overlays, CSV and summary output |
-| `central/download_models.py` | Download and verify all three models including SFace |
-| `central/workers.py` | Camera readers, inference threads, retry and worker lifecycle |
-| `central/staff.py` | Enrollment, template encryption and staff matching |
-| `central/store.py` | Camera config, event records, connection log, reports |
-| `central/server.py` | HTTP API, admin session, Origin/Host checks and CSRF validation |
-| `central/web/` | Central dashboard frontend |
+| `central/download_models.py` | Download and verify models including SFace and YOLOv8n |
+| `central/workers.py` | Camera readers, inference threads, stream health telemetry, worker lifecycle |
+| `central/staff.py` | Enrollment, template encryption, face and multi-signal staff matching |
+| `central/uniform_store.py` | Persistent showroom uniform color profiles |
+| `central/health.py` | Stream health telemetry, dropped stale frames, and reconnection monitoring |
+| `central/store.py` | Camera config (including zone_mode), event records, connection log, reports |
+| `central/server.py` | HTTP API, admin session, Origin/Host checks, CSRF, uniform & health routes |
+| `central/web/` | Central dashboard frontend with preview health stats & uniform management |
 | `demo_app.py`, `vision/demo_identity.py`, `web/demo.html` | Independent loopback recognition demo |
 | `app.py`, `web_app.py`, `run.py`, `web/index.html` | Original desktop, browser and command-line interfaces |
 | `deploy/` | Container, Compose, Caddy and placeholder configuration |
-| `tests/` | Counting, pipeline, central service and demo tests |
+| `tests/` | Unit tests across counting, ByteTrack, YOLO, uniform, zone, and central |
 
 Each central camera loads separate detector/matcher instances. The configured
 four-camera default is a guard, not a measured capacity. Inference is CPU-based;

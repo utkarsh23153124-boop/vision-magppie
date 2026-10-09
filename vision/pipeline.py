@@ -51,11 +51,14 @@ def source_info(source):
 
 
 def open_capture(kind, source):
-    cv2.setLogLevel(0)
+    import os
+    os.environ["OPENCV_FFMPEG_LOGLEVEL"] = "-8"
+    if hasattr(cv2, "setLogLevel"):
+        cv2.setLogLevel(0)
     if kind == "stream":
         capture = cv2.VideoCapture(source, cv2.CAP_FFMPEG, [
-            cv2.CAP_PROP_OPEN_TIMEOUT_MSEC, 8000,
-            cv2.CAP_PROP_READ_TIMEOUT_MSEC, 5000,
+            cv2.CAP_PROP_OPEN_TIMEOUT_MSEC, 6000,
+            cv2.CAP_PROP_READ_TIMEOUT_MSEC, 4000,
         ])
     else:
         capture = cv2.VideoCapture(source)
@@ -100,16 +103,22 @@ class Journal:
         self.file.close()
 
 
-def annotate(frame, tracks, faces, counter, stats):
+def annotate(frame, tracks, faces, counter, stats, staff_tracks=None):
     h, w = frame.shape[:2]
+    staff_tracks = staff_tracks or {}
     for track in tracks:
         if not track.observed:
             continue
         x1, y1, x2, y2 = (round(v * size) for v, size in zip(track.box, (w, h, w, h)))
-        cv2.rectangle(frame, (x1, y1), (x2, y2), (105, 220, 100), 2)
-        cv2.putText(frame, f"Person {track.id}", (x1, max(18, y1 - 7)),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (105, 220, 100), 1, cv2.LINE_AA)
-        cv2.circle(frame, ((x1 + x2) // 2, y2), 4, (105, 220, 100), -1)
+        is_staff = track.id in staff_tracks
+        color = (240, 180, 50) if is_staff else (105, 220, 100)
+        label = "Staff" if is_staff else f"Person {track.id}"
+        cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2)
+        cv2.putText(frame, label, (x1, max(18, y1 - 7)),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.55, color, 2, cv2.LINE_AA)
+        # Centroid marker matching counting axis coordinate
+        cx, cy = (x1 + x2) // 2, (y1 + y2) // 2
+        cv2.circle(frame, (cx, cy), 5, color, -1)
     for box, _ in faces:
         x1, y1, x2, y2 = (round(v * size) for v, size in zip(box, (w, h, w, h)))
         cv2.rectangle(frame, (x1, y1), (x2, y2), (255, 180, 75), 2)

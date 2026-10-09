@@ -40,9 +40,7 @@ press Import photos before starting the webcam. See [short demo steps](docs/simp
 This demo adds on-screen names/Unknown and staff-excluded crossing counts;
 the older `start_web.bat` interface does not include these demo features.
 
-Current direction: **central server**, with face detection, individual IN/OUT and
-showroom-scoped staff exclusion. Cloud provider is not selected; the application
-has not been deployed. Start with [central deployment](docs/CENTRAL_DEPLOYMENT.md) and the
+Current direction: **central server**, upgraded with **YOLOv8n ONNX**, **ByteTrack**, **ZoneCounter**, and **multi-signal staff exclusion** (consented SFace + Upper-body HSV uniform matching + crossing frequency suppression). Cloud provider is not selected; the application has not been deployed. Start with [central deployment](docs/CENTRAL_DEPLOYMENT.md) and the
 [short status](docs/simple/05_CENTRAL_VERSION.md).
 
 The original local prototype remains below for development and comparison.

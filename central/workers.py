@@ -8,15 +8,53 @@ import uuid
 
 import cv2
 
-from vision.counting import Tracker, LineCounter
-from vision.detectors import Detectors
+import os
+import queue
+import threading
+import time
+import uuid
+
+import cv2
+
+from vision.counting import Tracker, LineCounter, ZoneCounter
+from vision.bytetrack import ByteTracker
+from vision.detectors import Detectors, YoloDetectors
 from vision.pipeline import open_capture, annotate
 from central.staff import StaffMatcher
+from central.health import HealthMonitor
+from vision.uniform import UniformMatcher
+
+
+# Visitors: minimum seconds between logging the same direction for the same
+# track_id. Prevents double-counting when someone lingers near the counting
+# line or the tracker momentarily loses-then-re-acquires the same person.
+VISITOR_DIRECTION_COOLDOWN = 60
+
+
+class VisitorCooldown:
+    """In-memory gate: drop a (track_id, direction) crossing if the same pair
+    was already logged within VISITOR_DIRECTION_COOLDOWN seconds."""
+
+    def __init__(self, window=VISITOR_DIRECTION_COOLDOWN):
+        self.window = window
+        # {(track_id, direction): last_logged_monotonic}
+        self._last: dict = {}
+
+    def allow(self, track_id: int, direction: str, now: float) -> bool:
+        key = (track_id, direction)
+        last = self._last.get(key)
+        if last is not None and now - last < self.window:
+            return False
+        self._last[key] = now
+        return True
+
+    def reset(self):
+        self._last.clear()
 
 
 class LatestFrames:
-    def __init__(self, source, stop, state, opener=open_capture):
-        self.source, self.stop, self.state, self.opener = source, stop, state, opener
+    def __init__(self, source, stop, state, opener=open_capture, health=None):
+        self.source, self.stop, self.state, self.opener, self.health = source, stop, state, opener, health
         self.queue = queue.Queue(maxsize=1)
         self.thread = threading.Thread(target=self.read, daemon=True)
 
@@ -36,7 +74,13 @@ class LatestFrames:
             capture = None
             try:
                 self.state('connecting')
-                capture = self.opener('stream', self.source)
+                if str(self.source).strip().isdigit():
+                    kind, src = 'webcam', int(self.source)
+                elif os.path.isfile(str(self.source)):
+                    kind, src = 'file', str(self.source)
+                else:
+                    kind, src = 'stream', self.source
+                capture = self.opener(kind, src)
                 generation += 1
                 connected = False
                 while not self.stop.is_set():
@@ -47,6 +91,8 @@ class LatestFrames:
                         self.state('connected')
                         connected = True
                         backoff = 1
+                        if self.health:
+                            self.health.record_reconnect()
                     self.put((generation, time.monotonic(), datetime.now(timezone.utc).isoformat(), frame))
             except Exception:
                 if not self.stop.is_set():
@@ -60,16 +106,25 @@ class LatestFrames:
 
 
 class CameraWorker:
-    def __init__(self, config, source, store, staff_store):
+    def __init__(self, config, source, store, staff_store, uniform_store=None):
         self.config, self.source, self.store = config, source, store
         self.staff_store = staff_store
+        self.uniform_store = uniform_store
+        self.health = HealthMonitor(config['id'])
         self.stop = threading.Event()
         self.lock = threading.Lock()
         self.info = {'state': 'starting', 'frames': 0, 'ai_fps': 0, 'faces_now': 0}
         self.last_result = 0
         self.preview = None
         self.preview_at = 0
+        self.uniform_matcher = UniformMatcher()
+        self.reload_uniforms()
         self.thread = threading.Thread(target=self.run, daemon=True)
+
+    def reload_uniforms(self):
+        if self.uniform_store and self.config.get('showroom'):
+            profiles = self.uniform_store.gallery(self.config['showroom'])
+            self.uniform_matcher.profiles = dict(profiles)
 
     def state(self, value):
         with self.lock:
@@ -80,15 +135,25 @@ class CameraWorker:
 
     def snapshot(self):
         with self.lock:
-            return {**self.info, 'result_age_seconds': round(time.monotonic()-self.last_result, 1)
-                    if self.last_result else None, 'worker_alive': self.thread.is_alive()}
+            return {
+                **self.info,
+                'result_age_seconds': round(time.monotonic()-self.last_result, 1) if self.last_result else None,
+                'worker_alive': self.thread.is_alive(),
+                'health': self.health.snapshot()
+            }
 
     def run(self):
         reader = None
         try:
-            detectors = Detectors()
-            matcher = StaffMatcher(self.staff_store, self.config['showroom'])
-            reader = LatestFrames(self.source, self.stop, self.state)
+            # Try YoloDetectors first; fallback to Detectors if models missing
+            try:
+                detectors = YoloDetectors()
+            except Exception:
+                detectors = Detectors()
+
+            matcher = StaffMatcher(self.staff_store, self.config['showroom'], uniform_matcher=self.uniform_matcher)
+            visitor_cooldown = VisitorCooldown()
+            reader = LatestFrames(self.source, self.stop, self.state, health=self.health)
             reader.thread.start()
             generation, previous_time = None, None
             tracker, counter, run_id = None, None, None
@@ -97,28 +162,54 @@ class CameraWorker:
                     current, captured, observed_at, frame = reader.queue.get(timeout=.25)
                 except queue.Empty:
                     continue
-                if time.monotonic() - captured > 1:
+
+                self.health.record_received()
+
+                if time.monotonic() - captured > 2.5:
+                    self.health.record_stale_drop()
                     continue
-                if current != generation or previous_time is None or captured - previous_time > .8:
-                    tracker = Tracker()
-                    counter = LineCounter(self.config['axis'], self.config['position'], bool(self.config['in_positive']))
+
+                if current != generation or previous_time is None or captured - previous_time > 4.0:
+                    tracker = ByteTracker()
+                    if self.config.get('zone_mode'):
+                        counter = ZoneCounter(self.config['axis'], float(self.config.get('position', 0.5)), in_positive=bool(self.config['in_positive']))
+                    else:
+                        counter = LineCounter(self.config['axis'], float(self.config.get('position', 0.5)), bool(self.config['in_positive']))
                     run_id = uuid.uuid4().hex
                     generation = current
                     matcher.matches.clear()
+                    matcher.track_staff.clear()
+                    visitor_cooldown.reset()
                 previous_time = captured
                 if frame.shape[1] > 960:
                     frame = cv2.resize(frame, (960, round(frame.shape[0]*960/frame.shape[1])))
                 started = time.monotonic()
                 people, faces = detectors.people(frame), detectors.faces(frame)
                 tracks = tracker.update(people, captured)
-                matcher.update(tracks, detectors, captured)
+                matcher.update(tracks, detectors, captured, frame=frame)
                 events = counter.update(tracks, captured)
                 for event in events:
-                    event['category'] = 'staff' if matcher.is_staff(event['track_id'], captured) else 'visitor'
+                    if matcher.freq_suppressor:
+                        matcher.freq_suppressor.record_crossing(event['track_id'], captured)
+                    is_staff = matcher.is_staff(event['track_id'], captured)
+                    event['category'] = 'staff' if is_staff else 'visitor'
+                    # Attach the resolved staff_id so the DB can enforce the
+                    # per-identity uniqueness window.
+                    if is_staff:
+                        event['staff_id'] = matcher.get_staff_id(event['track_id'])
+                    else:
+                        # Visitor deduplication: same track crossing same
+                        # direction within VISITOR_DIRECTION_COOLDOWN is a
+                        # phantom re-trigger — drop it.
+                        if not visitor_cooldown.allow(event['track_id'], event['direction'], captured):
+                            event['_drop'] = True
+                events = [e for e in events if not e.get('_drop')]
                 self.store.record(self.config['id'], run_id, events, observed_at)
+                self.health.record_processed()
                 elapsed = time.monotonic() - started
                 if time.monotonic()-self.preview_at > 1:
-                    rendered = annotate(frame, tracks, faces, counter, {'processing_fps':1/max(elapsed,.001)})
+                    staff_tracks = {t.id: matcher.get_staff_id(t.id) for t in tracks if matcher.is_staff(t.id, captured)}
+                    rendered = annotate(frame, tracks, faces, counter, {'processing_fps':1/max(elapsed,.001)}, staff_tracks=staff_tracks)
                     ok, encoded = cv2.imencode('.jpg',rendered,[cv2.IMWRITE_JPEG_QUALITY,65])
                     if ok:
                         with self.lock:
@@ -142,9 +233,10 @@ class CameraWorker:
 
 
 class Manager:
-    def __init__(self, store, staff_store, limit=4):
+    def __init__(self, store, staff_store, limit=4, uniform_store=None):
         self.store, self.limit = store, limit
         self.staff_store = staff_store
+        self.uniform_store = uniform_store
         self.workers = {}
         self.lock = threading.Lock()
 
@@ -158,19 +250,37 @@ class Manager:
             if sum(w.thread.is_alive() for w in self.workers.values()) >= self.limit:
                 raise ValueError('Server camera limit reached. Stop a camera or resize the server.')
             config = self.store.camera(camera_id)
-            source = os.environ.get(config['source_ref'], '')
-            if not source.lower().startswith(('rtsp://', 'rtsps://', 'http://', 'https://')):
-                raise ValueError('Camera secret is missing on the server or is not a stream URL.')
-            worker = CameraWorker(config, source, self.store, self.staff_store)
+            ref = config['source_ref']
+            # Allow direct stream URL, webcam index, or file path; fallback to env variable
+            source = ref if (ref.lower().startswith(('rtsp://', 'rtsps://', 'http://', 'https://')) or ref.isdigit() or os.path.isfile(ref)) else os.environ.get(ref, '')
+            is_stream = source.lower().startswith(('rtsp://', 'rtsps://', 'http://', 'https://'))
+            is_webcam = source.strip().isdigit()
+            is_file = os.path.isfile(source)
+            if not (is_stream or is_webcam or is_file):
+                raise ValueError('Camera stream source is invalid or missing. Enter a direct RTSP/HTTP URL, webcam index (e.g. 0), local file path, or configured env secret name.')
+            worker = CameraWorker(config, source, self.store, self.staff_store, self.uniform_store)
             self.store.set_enabled(camera_id, True)
             self.workers[camera_id] = worker
             worker.thread.start()
+
+    def reload_uniforms(self, showroom=None):
+        with self.lock:
+            for worker in self.workers.values():
+                if showroom is None or worker.config.get('showroom') == showroom:
+                    worker.reload_uniforms()
 
     def stop(self, camera_id):
         with self.lock:
             self.store.set_enabled(camera_id, False)
             if camera_id in self.workers:
                 self.workers[camera_id].stop.set()
+
+    def delete(self, camera_id):
+        with self.lock:
+            if camera_id in self.workers:
+                worker = self.workers.pop(camera_id)
+                worker.stop.set()
+            self.store.delete_camera(camera_id)
 
     def snapshot(self):
         with self.lock:
@@ -191,6 +301,8 @@ class Manager:
             if worker and worker.thread.is_alive():
                 raise ValueError('Stop the camera and wait for stopped status before changing its line.')
             self.store.set_line(camera_id,data.get('axis'),float(data.get('position',.5)),data.get('in_positive'))
+            if 'zone_mode' in data:
+                self.store.set_zone_mode(camera_id, data['zone_mode'])
 
     def restore(self):
         for camera in self.store.cameras():

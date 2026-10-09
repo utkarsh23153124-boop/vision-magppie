@@ -1,16 +1,406 @@
 <!doctype html>
-<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Maggpie Central</title><link rel="stylesheet" href="/style.css"><script src="/app.js" defer></script></head>
-<body><header><div><span class="eyebrow">MAGGPIE / CENTRAL VISION</span><h1>Showroom footfall</h1><p>Individual visits, with enrolled staff excluded when confidently recognized.</p></div><button id="logout" hidden>Sign out</button></header>
-<p id="notice" role="status" aria-live="polite"></p>
-<section id="login" class="panel narrow"><h2>Admin sign in</h2><form id="loginForm"><label for="password">Server admin password</label><input id="password" type="password" required autocomplete="current-password"><button>Sign in</button></form><p class="muted">Your administrator configures the password on the central server.</p></section>
-<main id="dashboard" hidden>
-<section class="toolbar"><label for="date">Report date · India time</label><input id="date" type="date"><a id="export" href="/api/report.csv">Download daily CSV</a></section>
-<section class="metrics"><article><span>Visitor entries</span><strong id="entries">0</strong></article><article><span>Visitor exits</span><strong id="exits">0</strong></article><article><span>Staff crossings excluded</span><strong id="excluded">0</strong></article><article><span>Connected cameras</span><strong id="connected">0</strong></article></section>
-<section class="panel"><h2>Cameras</h2><p class="muted">Counts are physical crossings. Unrecognized people remain included. Connection age is measured at the server; it is not end-to-end camera latency.</p><div class="scroll"><table><thead><tr><th>Showroom / camera</th><th>Connection</th><th>Visitor IN / OUT</th><th>Staff excluded</th><th>AI / last result</th><th>Actions</th></tr></thead><tbody id="cameras"></tbody></table></div><p id="empty">Add your first camera below. No showroom PC is required for processing; the server needs a private network route to its stream.</p></section>
-<section class="panel" id="previewPanel" hidden><h2>Camera preview</h2><p>Updates approximately once per second for checking the counting line. Overlay IN/OUT values show the current tracking segment; use the report for durable visitor totals.</p><img id="preview" alt="Selected camera preview"><p id="previewStatus"></p><button id="closePreview">Close preview</button></section>
-<section class="panel" id="linePanel" hidden><h2>Adjust counting line</h2><p id="lineCamera"></p><form id="lineForm"><label for="lineAxis">Orientation</label><select id="lineAxis"><option value="vertical">Vertical</option><option value="horizontal">Horizontal</option></select><label for="linePosition">Position (%)</label><input id="linePosition" type="number" min="10" max="90" required><label for="lineDirection">IN direction</label><select id="lineDirection"><option value="positive">Down / right</option><option value="negative">Up / left</option></select><button>Save line (camera must be stopped)</button></form></section><section class="columns"><section class="panel"><h2>Add an entrance camera</h2><form id="cameraForm"><label for="showroom">Showroom</label><input id="showroom" placeholder="Delhi" maxlength="80" required><label for="cameraName">Camera name</label><input id="cameraName" placeholder="Main entrance" maxlength="80" required><label for="sourceRef">Server camera secret name</label><input id="sourceRef" placeholder="MAGGPIE_CAMERA_DELHI_ENTRY" pattern="MAGGPIE_CAMERA_[A-Z0-9_]{1,60}" required><p class="muted">Administrator sets this environment variable to the authorized RTSP URL. Camera passwords are never returned to the dashboard.</p><label for="axis">Counting line</label><select id="axis"><option value="vertical">Vertical</option><option value="horizontal">Horizontal</option></select><label for="position">Line position (%)</label><input id="position" type="number" min="10" max="90" value="50" required><label for="direction">IN direction</label><select id="direction"><option value="positive">Down / right</option><option value="negative">Up / left</option></select><button>Add camera</button></form></section>
-<section class="panel"><h2>Enroll staff</h2><p class="muted">Use 1–5 sharp portraits of one person. Photos are processed in memory and discarded; face templates are encrypted. Use exactly the same showroom name as the camera.</p><form id="staffForm"><label for="staffShowroom">Showroom</label><input id="staffShowroom" maxlength="80" required><label for="staffName">Staff name / internal code</label><input id="staffName" maxlength="80" required><label for="photos">Portrait photos</label><input id="photos" type="file" accept="image/jpeg,image/png,image/webp" multiple required><label class="checkbox"><input id="consent" type="checkbox" required>Staff member has agreed to face enrolment for footfall exclusion.</label><button>Enroll staff</button></form><h3>Enrolled staff</h3><div id="staff"></div></section></section>
-<section class="panel"><h2>Hourly visitor crossings</h2><div class="scroll"><table><thead><tr><th>Hour · IST</th><th>IN</th><th>OUT</th></tr></thead><tbody id="hours"></tbody></table></div></section>
-<section class="panel"><h2>Connection history</h2><p class="muted">Counts during camera outages cannot be recovered from the live stream. A server restart is also a coverage gap.</p><div id="history"></div></section>
-<footer>Pilot build · Family grouping and same-day visitor deduplication are not enabled. Net entry/exit totals are not verified occupancy. Staff faces must be visible near the counting line; missed staff matches remain in visitor counts.</footer>
-</main></body></html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Maggpie Central</title>
+    <link rel="stylesheet" href="/style.css" />
+    <script src="/app.js" defer></script>
+  </head>
+  <body>
+    <header>
+      <div>
+        <span class="eyebrow">MAGGPIE / CENTRAL VISION</span>
+        <h1>Showroom footfall</h1>
+        <p>
+          Individual visits, with enrolled staff excluded when confidently
+          recognized.
+        </p>
+      </div>
+      <button id="logout" hidden>Sign out</button>
+    </header>
+    <p id="notice" role="status" aria-live="polite"></p>
+    <section id="login" class="panel narrow">
+      <h2>Admin sign in</h2>
+      <form id="loginForm">
+        <label for="password">Server admin password</label
+        ><input
+          id="password"
+          type="password"
+          required
+          autocomplete="current-password"
+        /><button>Sign in</button>
+      </form>
+      <p class="muted">
+        Your administrator configures the password on the central server.
+      </p>
+    </section>
+    <main id="dashboard" hidden>
+      <nav class="nav-tabs" role="tablist">
+        <button class="tab-btn active" data-tab="tab-overview" type="button">
+          📊 Overview
+        </button>
+        <button class="tab-btn" data-tab="tab-cameras" type="button">
+          📹 Cameras & Feed
+        </button>
+        <button class="tab-btn" data-tab="tab-staff" type="button">
+          👥 Staff & Uniforms
+        </button>
+        <button class="tab-btn" data-tab="tab-logs" type="button">
+          📜 Activity & Logs
+        </button>
+      </nav>
+
+      <!-- TAB 1: OVERVIEW -->
+      <div id="tab-overview" class="tab-content active">
+        <section class="toolbar">
+          <label for="date">Report date · India time</label
+          ><input id="date" type="date" /><a id="export" href="/api/report.csv"
+            >Download daily CSV</a
+          >
+        </section>
+        <section class="metrics">
+          <article>
+            <span>Visitor entries</span><strong id="entries">0</strong>
+          </article>
+          <article>
+            <span>Visitor exits</span><strong id="exits">0</strong>
+          </article>
+          <article>
+            <span>Staff crossings excluded</span
+            ><strong id="excluded">0</strong>
+          </article>
+          <article>
+            <span>Connected cameras</span><strong id="connected">0</strong>
+          </article>
+        </section>
+
+        <section class="panel">
+          <h2>Live camera status</h2>
+          <div class="scroll">
+            <table>
+              <thead>
+                <tr>
+                  <th>Showroom / camera</th>
+                  <th>Source</th>
+                  <th>Connection</th>
+                  <th>Visitor IN / OUT</th>
+                  <th>Staff excluded</th>
+                  <th>AI / last result</th>
+                  <th>Actions</th>
+                </tr>
+              </thead>
+              <tbody id="camerasOverview"></tbody>
+            </table>
+          </div>
+        </section>
+
+        <section class="panel">
+          <h2>Hourly visitor crossings</h2>
+          <div class="scroll">
+            <table>
+              <thead>
+                <tr>
+                  <th>Hour · IST</th>
+                  <th>IN</th>
+                  <th>OUT</th>
+                </tr>
+              </thead>
+              <tbody id="hours"></tbody>
+            </table>
+          </div>
+        </section>
+      </div>
+
+      <!-- TAB 2: CAMERAS -->
+      <div id="tab-cameras" class="tab-content">
+        <section class="panel" id="previewPanel" hidden>
+          <h2>Camera preview & stream health</h2>
+          <p>
+            Updates approximately once per second for checking the counting
+            line. Overlay IN/OUT values show the current tracking segment; use
+            the report for durable visitor totals.
+          </p>
+          <img id="preview" alt="Selected camera preview" />
+          <p id="previewStatus"></p>
+          <div
+            id="cameraHealthStats"
+            class="muted"
+            style="margin-top: 8px"
+          ></div>
+          <button id="closePreview" type="button">Close preview</button>
+        </section>
+
+        <section class="panel" id="linePanel" hidden>
+          <h2>Adjust counting line & mode</h2>
+          <p id="lineCamera"></p>
+          <form id="lineForm">
+            <label for="lineAxis">Orientation</label
+            ><select id="lineAxis">
+              <option value="vertical">Vertical</option>
+              <option value="horizontal">Horizontal</option></select
+            ><label for="linePosition">Position (%)</label
+            ><input
+              id="linePosition"
+              type="number"
+              min="10"
+              max="90"
+              required
+            /><label for="lineDirection">IN direction</label
+            ><select id="lineDirection">
+              <option value="positive">Down / right</option>
+              <option value="negative">Up / left</option></select
+            ><label class="checkbox"
+              ><input id="lineZoneMode" type="checkbox" />Use two-zone
+              transition gate (filters lingerers/oscillations)</label
+            ><button type="submit">
+              Save line & mode (camera must be stopped)
+            </button>
+          </form>
+        </section>
+
+        <section class="panel">
+          <h2>Configured cameras</h2>
+          <p class="muted">
+            Counts are physical crossings. Direct RTSP URLs, webcam IDs, and
+            video file paths work without editing .env files.
+          </p>
+          <div class="scroll">
+            <table>
+              <thead>
+                <tr>
+                  <th>Showroom / camera</th>
+                  <th>Stream source / secret</th>
+                  <th>Connection</th>
+                  <th>Visitor IN / OUT</th>
+                  <th>Staff excluded</th>
+                  <th>AI / last result</th>
+                  <th>Actions</th>
+                </tr>
+              </thead>
+              <tbody id="cameras"></tbody>
+            </table>
+          </div>
+          <p id="empty">
+            Add your camera below using an RTSP URL (e.g.
+            rtsp://192.168.1.100:554/stream) or webcam index (0).
+          </p>
+        </section>
+
+        <section class="panel">
+          <h2>Add entrance camera</h2>
+          <form id="cameraForm">
+            <div class="form-row">
+              <div>
+                <label for="showroom">Showroom</label
+                ><input
+                  id="showroom"
+                  placeholder="e.g. Delhi, Mumbai"
+                  maxlength="80"
+                  required
+                />
+              </div>
+              <div>
+                <label for="cameraName">Camera name</label
+                ><input
+                  id="cameraName"
+                  placeholder="e.g. Main entrance, Front door"
+                  maxlength="80"
+                  required
+                />
+              </div>
+            </div>
+
+            <label for="sourceRef">Stream URL or Camera Source</label
+            ><input
+              id="sourceRef"
+              placeholder="rtsp://admin:pass@192.168.1.50:554/live or 0 for webcam or MAGGPIE_CAMERA_ENTRY"
+              required
+            />
+            <div class="form-row">
+              <div>
+                <label for="axis">Counting line orientation</label
+                ><select id="axis">
+                  <option value="vertical">Vertical</option>
+                  <option value="horizontal">Horizontal</option>
+                </select>
+              </div>
+              <div>
+                <label for="position">Line position (%)</label
+                ><input
+                  id="position"
+                  type="number"
+                  min="10"
+                  max="90"
+                  value="50"
+                  required
+                />
+              </div>
+              <div>
+                <label for="direction">IN direction</label
+                ><select id="direction">
+                  <option value="positive">Down / right</option>
+                  <option value="negative">Up / left</option>
+                </select>
+              </div>
+            </div>
+
+            <label class="checkbox"
+              ><input id="zoneMode" type="checkbox" />Use two-zone transition
+              gate (filters lingerers/oscillations)</label
+            ><button type="submit">Add camera</button>
+          </form>
+        </section>
+      </div>
+
+      <!-- TAB 3: STAFF & UNIFORMS -->
+      <div id="tab-staff" class="tab-content">
+        <section class="columns">
+          <section class="panel">
+            <h2>Enrolled staff members</h2>
+            <p class="muted">
+              Staff registered for footfall exclusion. Their movements across
+              the counting line are logged and excluded from visitor counts.
+            </p>
+            <div id="staff" class="item-list"></div>
+            <p id="staffEmpty" class="muted">No staff members enrolled yet.</p>
+
+            <hr
+              style="margin: 24px 0; border: 0; border-top: 1px solid #30483b"
+            />
+
+            <h2>Enroll staff member</h2>
+            <form id="staffForm">
+              <label for="staffShowroom">Showroom</label
+              ><input
+                id="staffShowroom"
+                placeholder="Must match camera showroom (e.g. Delhi)"
+                maxlength="80"
+                required
+              /><label for="staffName">Staff name / employee code</label
+              ><input
+                id="staffName"
+                placeholder="e.g. Rahul Sharma"
+                maxlength="80"
+                required
+              /><label for="photos"
+                >Portrait photos (1–10 photos with different
+                angles/lighting)</label
+              ><input
+                id="photos"
+                type="file"
+                accept="image/jpeg,image/png,image/webp"
+                multiple
+                required
+              /><label class="checkbox"
+                ><input id="consent" type="checkbox" required />Staff member has
+                agreed to face enrolment for footfall exclusion.</label
+              ><button type="submit">Enroll staff face</button>
+            </form>
+          </section>
+
+          <section class="panel">
+            <h2>Staff uniform color profiles</h2>
+            <p class="muted">
+              Optional secondary visual filter based on upper-body attire
+              colors.
+            </p>
+            <div id="uniforms" class="item-list"></div>
+            <p id="uniformEmpty" class="muted">
+              No uniform profiles registered.
+            </p>
+
+            <hr
+              style="margin: 24px 0; border: 0; border-top: 1px solid #30483b"
+            />
+
+            <h2>Register uniform profile</h2>
+            <form id="uniformForm">
+              <label for="uniformShowroom">Showroom</label
+              ><input
+                id="uniformShowroom"
+                placeholder="Must match camera showroom (e.g. Delhi)"
+                maxlength="80"
+                required
+              /><label for="uniformLabel">Uniform label</label
+              ><input
+                id="uniformLabel"
+                placeholder="e.g. Black Blazer / Navy Shirt"
+                maxlength="80"
+                required
+              /><label for="uniformPhotos">Uniform sample photos</label
+              ><input
+                id="uniformPhotos"
+                type="file"
+                accept="image/jpeg,image/png,image/webp"
+                multiple
+                required
+              /><button type="submit">Register uniform profile</button>
+            </form>
+          </section>
+        </section>
+      </div>
+
+      <!-- TAB 4: ACTIVITY & LOGS -->
+      <div id="tab-logs" class="tab-content">
+        <section class="panel">
+          <h2>Staff crossings history log</h2>
+          <p class="muted">
+            Recent crossings classified as staff and excluded from visitor
+            footfall.
+          </p>
+          <div class="scroll">
+            <table>
+              <thead>
+                <tr>
+                  <th>Timestamp · IST</th>
+                  <th>Showroom</th>
+                  <th>Camera</th>
+                  <th>Staff identity</th>
+                  <th>Direction</th>
+                  <th>Classification</th>
+                </tr>
+              </thead>
+              <tbody id="staffHistory"></tbody>
+            </table>
+          </div>
+          <p id="staffHistoryEmpty" class="muted">
+            No staff crossings recorded yet.
+          </p>
+        </section>
+
+        <section class="panel">
+          <h2>Camera connection history</h2>
+          <p class="muted">
+            Connection states, reconnections, and stream health events.
+          </p>
+          <div id="history"></div>
+        </section>
+
+        <section class="panel">
+          <h2>Recent crossing events (all visitors & staff)</h2>
+          <p class="muted">
+            Complete stream crossing events recorded across all active cameras.
+          </p>
+          <div class="scroll">
+            <table>
+              <thead>
+                <tr>
+                  <th>Timestamp · IST</th>
+                  <th>Showroom / Camera</th>
+                  <th>Direction</th>
+                  <th>Category</th>
+                </tr>
+              </thead>
+              <tbody id="crossingsLog"></tbody>
+            </table>
+          </div>
+        </section>
+      </div>
+      <footer>
+        Pilot build · YOLOv8n + ByteTrack + Multi-signal Staff Exclusion. Net
+        entry/exit totals are not verified occupancy.
+      </footer>
+    </main>
+  </body>
+</html>
